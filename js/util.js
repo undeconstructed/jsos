@@ -39,6 +39,30 @@ export function toRadians (degrees) {
   return (degrees - 90) / 180 * Math.PI
 }
 
+export class IdMap {
+  constructor () {
+    this.map = new Map()
+    this.count = 0
+  }
+  add (e) {
+    e.id = this.count++
+    this.map.set(e.id, e)
+    return e.id
+  }
+  get (id) {
+    return this.map.get(id)
+  }
+  delete (id) {
+    this.map.delete(id)
+  }
+  entries () {
+    return this.map.entries()
+  }
+  values () {
+    return this.map.values()
+  }
+}
+
 // frontend
 
 export function mkel(tag, opts) {
