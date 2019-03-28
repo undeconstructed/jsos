@@ -1,70 +1,20 @@
 
 import { assert, IdMap } from './util.js'
 
-let disk = {
-  // pretend drivers
-  'drv1': {
-    main (sys) {
-      sys.debug('drv1 main')
-    }
-  },
-  'drv2': {
-    main (sys) {
-      sys.debug('drv2 main')
-    }
-  },
-  // fs server
-  'fs': {
-    main (sys) {
-      sys.debug('fs main')
-      sys.call('register', null, null, ['fs', 'incoming'])
-    },
-    incoming (sys) {
-      sys.debug('fs incoming')
-    }
-  },
-   // init app, and master of all other pods
-  'init': {
-    main (sys) {
-      sys.debug('init main')
-      sys.call('connect', 'fsconnected', 'ret1', ['fs'])
-    },
-    fsconnected (sys) {
-      let fschn = sys.read('ret1')
-      sys.debug('init fsconnected', fschn)
-      sys.write('fschn', fschn)
-      sys.send(fschn, 'some message')
-    }
-  },
-  // display server
-  'display': {
-    main (sys) {
-      sys.debug('display main')
-    }
-  },
-  // graphical shell app
-  'gshell': {
-    main (sys) {
-      sys.debug('gshell main')
-    }
-  },
-  // what to start up
-  'inittab': `display
-`
-}
-
 // the os kernel.
 export default class OS {
-  constructor (config) {
-    this.config = config
-    this.display = config.display
-    this.disk = disk
+  constructor (bios) {
+    this.bios = bios
   }
   boot () {
+    this.bios.initConsole()
+    this.bios.initKeyboard()
+
     this.time = 0
     this.pod0 = this.createPod0()
     this.pod0.start()
-    this.display.textContent = 'booting'
+    this.bios.writeToConsole('booting')
+
     // tick
     window.setTimeout(() => this.tick(), 0)
   }
@@ -73,13 +23,20 @@ export default class OS {
     let p = new Pod(this, null, {
       main (sys) {
         sys.debug('0 main')
+        sys.write('semaphore', 3)
         sys.call('spawn', 'cb', null, ['drv1'])
         sys.call('spawn', 'cb', null, ['drv2'])
         sys.call('spawn', 'cb', null, ['fs'])
-        sys.call('spawn', 'cb', null, ['init'])
       },
       cb (sys) {
-        sys.debug('0 cb')
+        let semaphore = sys.read('semaphore')
+        semaphore--
+        sys.debug('0 cb ' + semaphore)
+        sys.write('semaphore', semaphore)
+        if (semaphore === 0) {
+          sys.debug('spawning init')
+          sys.call('spawn', 'cb', null, ['init'])
+        }
       }
     })
     p.id = 0
@@ -100,7 +57,7 @@ export default class OS {
     window.setTimeout(() => this.tick(), 100)
   }
   debug (args) {
-    this.display.textContent += `\n${this.time} ${args}`
+    this.bios.writeToConsole(`\n${this.time} ${args}`)
   }
 }
 
@@ -139,16 +96,19 @@ class Pod {
       }
     }
 
-    if (this.queue.length === 0) {
-      return { sends: [], calls: [] }
+    let res = { sends: [], calls: [] }
+
+    while (this.queue.length > 0) {
+      // TODO - stop after time used up
+
+      let t = this.queue.shift()
+      let res2 = this.invoke(t)
+
+      res.calls = res.calls.concat(this.doSyscalls(res2.calls))
+      res.sends = res.sends.concat(res2.sends)
     }
 
-    let t = this.queue.shift()
-    let res = this.invoke(t)
-
-    let unhandledCalls = this.doSyscalls(res.calls)
-
-    return { sends: res.sends, calls: unhandledCalls }
+    return res
   }
   invoke (task) {
     let os = this.os
@@ -223,7 +183,7 @@ class Pod {
     let [binary] = args
 
     // cheat straight to disk
-    let binx = disk[binary]
+    let binx = this.os.bios.readDisk(binary)
     let bin = {}
     for (let prop in binx) {
       bin[prop] = binx[prop]

@@ -106,11 +106,14 @@ body {
 .display {
   width: 1025px;
   height: 768px;
+  margin: auto;
   overflow: auto;
   font-family: 'Courier New', fixed;
   background-color: black;
   color: #00FF00;
   white-space: pre;
+  border: 10px black solid;
+  border-radius: 10px;
 }
 
 /* ==========================================================================
