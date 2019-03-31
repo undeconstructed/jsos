@@ -3,7 +3,7 @@
 A simulation of an imaginary OS, in a browser. For some reason.
 
 The plan is to have as few primitives as possible, and make sure that the OS
-is always funfamentally in control. This means nothing blocks, ever. All code
+is always fundamentally in control. This means nothing blocks, ever. All code
 is run at a direct request of the OS.
 
 The thinking behind this is that so much programming is about trying to work

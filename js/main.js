@@ -1,6 +1,7 @@
 
 import OS from './os.js'
 
+// keyboard hardward
 let keyboard = {
   init () {
     document.addEventListener('keypress', e => {
@@ -12,12 +13,14 @@ let keyboard = {
   }
 }
 
+// display hardware
 let display = {
   init () {
     this.html = document.getElementById('display')
   }
 }
 
+// represents filesystem on disk
 let files = {
   // pretend drivers
   'drv1': {
@@ -85,12 +88,14 @@ let files = {
 `
 }
 
+// disk hardware
 let disk = {
   read (name) {
     return files[name]
   }
 }
 
+// sort of baby BIOS for easy hardware access
 let bios = {
   initConsole () {
     display.init()
@@ -109,6 +114,7 @@ let bios = {
   }
 }
 
+// the OS
 let os = new OS(bios)
 os.boot()
 

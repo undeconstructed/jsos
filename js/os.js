@@ -7,15 +7,19 @@ export default class OS {
     this.bios = bios
   }
   boot () {
+    // use bios to be able to do basic things during boot
     this.bios.initConsole()
     this.bios.initKeyboard()
 
+    // set up internal state of kernel
     this.time = 0
     this.pod0 = this.createPod0()
     this.pod0.start()
+
+    // info
     this.bios.writeToConsole('booting')
 
-    // tick
+    // clear stack and tick
     window.setTimeout(() => this.tick(), 0)
   }
   createPod0 () {
@@ -23,37 +27,45 @@ export default class OS {
     let channel0 = new Channel()
     let pod0 = new Pod(this, null, channel0.end, {
       main (sys) {
+        // start of first userspace code
         sys.debug('0 main')
 
+        // this registry enables connection to drivers
         let registry = new Map()
         sys.write('registry', registry)
 
+        // start up system level processes
         sys.write('semaphore', 3)
         sys.call('spawn', 'cb', null, null, ['drv1'])
         sys.call('spawn', 'cb', null, null, ['drv2'])
         sys.call('spawn', 'cb', null, null, ['fs'])
       },
-      receive (sys) {
-        sys.debug('0 receive')
-      },
       cb (sys) {
+        // lazy single callback for all earlier spawns
         let semaphore = sys.read('semaphore')
         semaphore--
         sys.debug('0 cb ' + semaphore)
         sys.write('semaphore', semaphore)
 
         if (semaphore === 0) {
+          // start user processes, via init
           sys.debug('spawning init')
           sys.call('spawn', 'cb', null, null, ['init'])
         }
+      },
+      receive (sys) {
+        // message received from child pod
+        sys.debug('0 receive')
       }
     })
     pod0.id = 0
     return pod0
   }
   tick () {
+    // nominal time for sim
     this.time++
 
+    // tick the whole OS by recursing down the process tree
     let res = this.pod0.tick(this)
 
     for (let call of res.calls) {
@@ -79,12 +91,12 @@ class Pod {
     this.states = new IdMap()
     let state0 = new State()
     this.states.add(state0)
-    // channels
+    // channels owned by this pod, i.e. connecting its children
     this.channels = new IdMap()
-    // endpoints
+    // channel endpoints
     this.endpoints = new IdMap()
     this.endpoints.add(channel0)
-    // children
+    // child pods
     this.children = new IdMap()
   }
   start () {
@@ -94,6 +106,7 @@ class Pod {
     this.queue.push(new Task(entry, state))
   }
   tick (ctx) {
+    // tick all children
     for (let c of this.children.values()) {
       let res = c.tick(this)
       // TODO - pass these up?
@@ -102,6 +115,7 @@ class Pod {
       }
     }
 
+    // look for incoming messages that need processing
     for (let channel of this.endpoints.values()) {
       let rcv = channel.read()
       if (rcv) {
@@ -112,6 +126,7 @@ class Pod {
 
     let res = { calls: [] }
 
+    // run through task queue
     while (this.queue.length > 0) {
       // TODO - stop after time used up
 
@@ -124,10 +139,13 @@ class Pod {
     return res
   }
   invoke (task) {
+    // run a task, i.e. execute an entry point with a state
     let os = this.os
     let state = this.states.get(task.state)
+    // to collect system calls
     let calls = []
 
+    // context object represents interface to machine and OS.
     let c = {
       debug (...args) {
         os.debug(args)
@@ -155,6 +173,7 @@ class Pod {
       console.log('userspace error', e)
     }
 
+    // initial work on syscalls, represents moving data into kernel space
     calls = calls.map(e => ({ pod: this, call: e[0], reentry: e[1], state: e[2], tag: e[3], args: e[4] }))
 
     return { state, calls }
@@ -193,11 +212,13 @@ class Pod {
     }
   }
   _alloc (pod, args) {
+    // allocate a new state object
     let state = new State()
-    pod.states
+    pod.states.add(state)
+    return state.id
   }
   _spawn (pod, args) {
-    // starts a new process, as a child of this one
+    // create and start a new pod, as a child of this one
     let [binary] = args
 
     // cheat straight to disk
@@ -217,9 +238,10 @@ class Pod {
     return p.id
   }
   _connect (pod, args) {
-    // connects two pods, both of which are children of this one
+    // connect two pods, both of which are children of this one
     let [srcId, name] = args
 
+    // TODO - handle deeper children
     let src = pod.children.get(srcId)
     let tgt = pod.names.get(name)
 
@@ -232,6 +254,7 @@ class Pod {
     return chn.start.id
   }
   _send (pod, args) {
+    // send data into a channel
     let [chnId, data] = args
     let chn = pod.endpoints.get(chnId)
     chn.write(data)
@@ -255,6 +278,7 @@ class Channel {
   }
 }
 
+// one end of a channel
 class ChannelEnd {
   constructor (channel) {
     this.channel = channel
