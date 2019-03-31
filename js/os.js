@@ -20,27 +20,36 @@ export default class OS {
   }
   createPod0 () {
     // pod0 code is embedded in kernel
-    let p = new Pod(this, null, {
+    let channel0 = new Channel()
+    let pod0 = new Pod(this, null, channel0.end, {
       main (sys) {
         sys.debug('0 main')
+
+        let registry = new Map()
+        sys.write('registry', registry)
+
         sys.write('semaphore', 3)
-        sys.call('spawn', 'cb', null, ['drv1'])
-        sys.call('spawn', 'cb', null, ['drv2'])
-        sys.call('spawn', 'cb', null, ['fs'])
+        sys.call('spawn', 'cb', null, null, ['drv1'])
+        sys.call('spawn', 'cb', null, null, ['drv2'])
+        sys.call('spawn', 'cb', null, null, ['fs'])
+      },
+      receive (sys) {
+        sys.debug('0 receive')
       },
       cb (sys) {
         let semaphore = sys.read('semaphore')
         semaphore--
         sys.debug('0 cb ' + semaphore)
         sys.write('semaphore', semaphore)
+
         if (semaphore === 0) {
           sys.debug('spawning init')
-          sys.call('spawn', 'cb', null, ['init'])
+          sys.call('spawn', 'cb', null, null, ['init'])
         }
       }
     })
-    p.id = 0
-    return p
+    pod0.id = 0
+    return pod0
   }
   tick () {
     this.time++
@@ -48,10 +57,7 @@ export default class OS {
     let res = this.pod0.tick(this)
 
     for (let call of res.calls) {
-      switch (call.name) {
-      default:
-        console.log('unmet syscall', call)
-      }
+      console.log('unmet syscall', call)
     }
 
     window.setTimeout(() => this.tick(), 100)
@@ -63,40 +69,48 @@ export default class OS {
 
 // fully isolated world in which work can be done
 class Pod {
-  constructor (os, parent, binary) {
+  constructor (os, parent, channel0, binary) {
     this.os = os
     this.parent = parent
     this.binary = binary
-    // state
-    this.channel = new Channel()
-    this.names = new Map()
+    // queue
     this.queue = []
+    // states
     this.states = new IdMap()
+    let state0 = new State()
+    this.states.add(state0)
+    // channels
     this.channels = new IdMap()
+    // endpoints
+    this.endpoints = new IdMap()
+    this.endpoints.add(channel0)
     // children
     this.children = new IdMap()
   }
   start () {
-    let sid = this.states.add(new State())
-    this.enqueue('main', sid)
+    this.enqueue('main', 0)
   }
   enqueue (entry, state) {
     this.queue.push(new Task(entry, state))
   }
   tick (ctx) {
-    for (let channel of this.channels.values()) {
-    }
-
     for (let c of this.children.values()) {
       let res = c.tick(this)
-      this.doSends(res.sends)
       // TODO - pass these up?
       for (let call of res.calls) {
         console.log('unhandled', call)
       }
     }
 
-    let res = { sends: [], calls: [] }
+    for (let channel of this.endpoints.values()) {
+      let rcv = channel.read()
+      if (rcv) {
+        // TODO - which state?
+        this.queue.push(new Task('receive', 0))
+      }
+    }
+
+    let res = { calls: [] }
 
     while (this.queue.length > 0) {
       // TODO - stop after time used up
@@ -105,7 +119,6 @@ class Pod {
       let res2 = this.invoke(t)
 
       res.calls = res.calls.concat(this.doSyscalls(res2.calls))
-      res.sends = res.sends.concat(res2.sends)
     }
 
     return res
@@ -114,12 +127,14 @@ class Pod {
     let os = this.os
     let state = this.states.get(task.state)
     let calls = []
-    let sends = []
 
     let c = {
       debug (...args) {
         os.debug(args)
         console.log(...args)
+      },
+      state () {
+        return task.state
       },
       read (addr) {
         return JSON.parse(state.data.get(addr))
@@ -127,11 +142,8 @@ class Pod {
       write (addr, data) {
         state.data.set(addr, JSON.stringify(data))
       },
-      call: (name, reentry, tag, args) => {
-        calls.push([name, reentry, tag, JSON.stringify(args)])
-      },
-      send: (chn, data) => {
-        sends.push([chn, JSON.stringify(data)])
+      call: (name, reentry, state, tag, args) => {
+        calls.push([name, reentry, task.state, tag, JSON.stringify(args)])
       }
     }
 
@@ -143,10 +155,9 @@ class Pod {
       console.log('userspace error', e)
     }
 
-    calls = calls.map(e => ({ pod: this, state: state, call: e[0], reentry: e[1], tag: e[2], args: e[3] }))
-    sends = sends.map(e => ({ pod: this, channel: e[0], data: e[1] }))
+    calls = calls.map(e => ({ pod: this, call: e[0], reentry: e[1], state: e[2], tag: e[3], args: e[4] }))
 
-    return { state, calls, sends }
+    return { state, calls }
   }
   doSyscalls (calls) {
     let unhandled = []
@@ -159,7 +170,7 @@ class Pod {
           call.state.data.set(call.tag, ret)
         }
         if (call.reentry) {
-          this.enqueue(call.reentry, call.state.id)
+          this.enqueue(call.reentry, call.state)
         }
       } else {
         unhandled.push(call)
@@ -169,17 +180,24 @@ class Pod {
   }
   doSyscall (call) {
     switch (call.call) {
+    case 'alloc':
+      return this._alloc(call.pod, call.args)
     case 'spawn':
       return this._spawn(call.pod, call.args)
-    case 'register':
-      return this._register(call.pod, call.args)
     case 'connect':
       return this._connect(call.pod, call.args)
+    case 'send':
+      return this._send(call.pod, call.args)
     default:
       return null
     }
   }
+  _alloc (pod, args) {
+    let state = new State()
+    pod.states
+  }
   _spawn (pod, args) {
+    // starts a new process, as a child of this one
     let [binary] = args
 
     // cheat straight to disk
@@ -189,28 +207,35 @@ class Pod {
       bin[prop] = binx[prop]
     }
 
-    let p = new Pod(this.os, this, bin)
+    let channel0 = new Channel()
+    this.endpoints.add(channel0.start)
+
+    let p = new Pod(this.os, this, channel0.end, bin)
+
     this.children.add(p)
     p.start()
     return p.id
   }
-  _register (pod, args) {
-    let [name] = args
-    pod.parent.names.set(name, pod)
-    return name
-  }
   _connect (pod, args) {
-    let [name] = args
-    let tgt = pod.parent.names.get(name)
-    let chn = new Channel()
-    this.channels.add(chn)
-    return chn.id
+    // connects two pods, both of which are children of this one
+    let [srcId, name] = args
+
+    let src = pod.children.get(srcId)
+    let tgt = pod.names.get(name)
+
+    let chn = new Channel(pod)
+    pod.channels.add(chn)
+    src.endpoints.add(chn.start)
+    // TODO - some sort of handshake
+    tgt.endpoints.add(chn.end)
+
+    return chn.start.id
   }
-  doSends (sends) {
-    for (let send of sends) {
-      let tgt = this.channels.get(send.channel)
-      // this.os.debug('send', send)
-    }
+  _send (pod, args) {
+    let [chnId, data] = args
+    let chn = pod.endpoints.get(chnId)
+    chn.write(data)
+    return true
   }
 }
 
@@ -224,11 +249,26 @@ class State {
 
 // connects pods
 class Channel {
-  constructor (start, end) {
-    this.start = start
-    this.end = end
+  constructor (owner) {
+    this.start = new ChannelEnd(this)
+    this.end = new ChannelEnd(this)
+  }
+}
+
+class ChannelEnd {
+  constructor (channel) {
+    this.channel = channel
     this.up = []
-    this.down = []
+  }
+  write (data) {
+    this.up.push(data)
+  }
+  read () {
+    if (this === this.channel.start) {
+      return this.channel.end.up.shift()
+    } else {
+      return this.channel.start.up.shift()
+    }
   }
 }
 
@@ -239,4 +279,3 @@ class Task {
     this.state = state
   }
 }
-

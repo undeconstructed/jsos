@@ -100,13 +100,16 @@ textarea {
 body {
   font-family: 'Cantarell', sans-serif;
   background-color: #eee;
-  padding: 5px;
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .display {
-  width: 1025px;
+  width: 1024px;
   height: 768px;
-  margin: auto;
   overflow: auto;
   font-family: 'Courier New', fixed;
   background-color: black;

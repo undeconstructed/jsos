@@ -40,23 +40,32 @@ let files = {
   'fs': {
     main (sys) {
       sys.debug('fs main')
-      sys.call('register', null, null, ['fs', 'incoming'])
+      sys.call('send', null, null, null, [0, ['register', 'fs']])
+    },
+    data (sys, chn) {
     },
     incoming (sys) {
       sys.debug('fs incoming')
     }
   },
-   // init app, and master of all other pods
+   // init app, and master of all normal pods
   'init': {
     main (sys) {
       sys.debug('init main')
-      sys.call('connect', 'fsconnected', 'ret1', ['fs'])
+
+      let registry = new Map()
+      sys.write('registry', registry)
+
+      sys.call('send', null, null, null, [0, ['connect', 'fs']])
+    },
+    receive (sys) {
+      sys.debug('init receive')
     },
     fsconnected (sys) {
       let fschn = sys.read('ret1')
       sys.debug('init fsconnected', fschn)
       sys.write('fschn', fschn)
-      sys.send(fschn, 'some message')
+      sys.call('send', null, null, null, [fschn, 'some message'])
     }
   },
   // display server
