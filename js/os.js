@@ -14,50 +14,20 @@ export default class OS {
     // set up internal state of kernel
     this.time = 0
     this.pod0 = this.createPod0()
-    this.pod0.start()
 
     // info
     this.bios.writeToConsole('booting')
+
+    // make something happens
+    this.start(this.pod0)
 
     // clear stack and tick
     window.setTimeout(() => this.tick(), 0)
   }
   createPod0 () {
     // pod0 code is embedded in kernel
-    let channel0 = new Channel()
-    let pod0 = new Pod(this, null, channel0.end, {
-      main (sys) {
-        // start of first userspace code
-        sys.debug('0 main')
-
-        // this registry enables connection to drivers
-        let registry = new Map()
-        sys.write('registry', registry)
-
-        // start up system level processes
-        sys.write('semaphore', 3)
-        sys.call('spawn', 'cb', null, null, ['drv1'])
-        sys.call('spawn', 'cb', null, null, ['drv2'])
-        sys.call('spawn', 'cb', null, null, ['fs'])
-      },
-      cb (sys) {
-        // lazy single callback for all earlier spawns
-        let semaphore = sys.read('semaphore')
-        semaphore--
-        sys.debug('0 cb ' + semaphore)
-        sys.write('semaphore', semaphore)
-
-        if (semaphore === 0) {
-          // start user processes, via init
-          sys.debug('spawning init')
-          sys.call('spawn', 'cb', null, null, ['init'])
-        }
-      },
-      receive (sys) {
-        // message received from child pod
-        sys.debug('0 receive')
-      }
-    })
+    let channel0 = this.newChannel(null)
+    let pod0 = this.newPod(null, channel0.end, pod0bin)
     pod0.id = 0
     return pod0
   }
@@ -66,176 +36,249 @@ export default class OS {
     this.time++
 
     // tick the whole OS by recursing down the process tree
-    let res = this.pod0.tick(this)
-
-    for (let call of res.calls) {
-      console.log('unmet syscall', call)
-    }
+    let res = this.tickPod(this.pod0)
+    // TODO - see what happened?
 
     window.setTimeout(() => this.tick(), 100)
   }
-  debug (args) {
-    this.bios.writeToConsole(`\n${this.time} ${args}`)
-  }
-}
-
-// fully isolated world in which work can be done
-class Pod {
-  constructor (os, parent, channel0, binary) {
-    this.os = os
-    this.parent = parent
-    this.binary = binary
-    // queue
-    this.queue = []
-    // states
-    this.states = new IdMap()
-    let state0 = new State()
-    this.states.add(state0)
-    // channels owned by this pod, i.e. connecting its children
-    this.channels = new IdMap()
-    // channel endpoints
-    this.endpoints = new IdMap()
-    this.endpoints.add(channel0)
-    // child pods
-    this.children = new IdMap()
-  }
-  start () {
-    this.enqueue('main', 0)
-  }
-  enqueue (entry, state) {
-    this.queue.push(new Task(entry, state))
-  }
-  tick (ctx) {
+  tickPod (pod) {
     // tick all children
-    for (let c of this.children.values()) {
-      let res = c.tick(this)
-      // TODO - pass these up?
-      for (let call of res.calls) {
-        console.log('unhandled', call)
-      }
+    for (let c of pod.children.values()) {
+      let res = this.tickPod(c)
+      // TODO - check what happened?
     }
 
     // look for incoming messages that need processing
-    for (let channel of this.endpoints.values()) {
-      let rcv = channel.read()
-      if (rcv) {
-        // TODO - which state?
-        this.queue.push(new Task('receive', 0))
+    for (let channel of pod.endpoints.values()) {
+      if (channel.rx) {
+        // if set to receive
+        let state = pod.states.get(channel.rx.stateId)
+        if (state.owner) {
+          continue
+        }
+        // and state is unlocked
+        let rcv = channel.read()
+        if (rcv) {
+          // and data is available
+          // then store data in state
+          state.write(channel.rx.tag, {
+            channelId: channel.id,
+            data: rcv
+          })
+          // and schedule execution
+          this.enqueue(pod, channel.rx.entry, channel.rx.stateId)
+        }
       }
     }
 
-    let res = { calls: [] }
+    let res = { }
 
     // run through task queue
-    while (this.queue.length > 0) {
+    while (pod.queue.length > 0) {
       // TODO - stop after time used up
 
-      let t = this.queue.shift()
-      let res2 = this.invoke(t)
+      let t = pod.queue.shift()
+      let res2 = this.invoke(pod, t)
 
-      res.calls = res.calls.concat(this.doSyscalls(res2.calls))
+      this.doSyscalls(pod, res2.calls)
     }
 
     return res
   }
-  invoke (task) {
+  invoke (pod, task) {
     // run a task, i.e. execute an entry point with a state
-    let os = this.os
-    let state = this.states.get(task.state)
-    // to collect system calls
-    let calls = []
+    let os = this
+    let id = this.podId(pod, null)
+    let state = task.state
+    let entry = task.entry
 
     // context object represents interface to machine and OS.
     let c = {
       debug (...args) {
-        os.debug(args)
-        console.log(...args)
+        os.debug(id + ' ' + args.join(' '))
+        console.log('dbg', id, args)
       },
       state () {
-        return task.state
+        return task.state.id
       },
       read (addr) {
-        return JSON.parse(state.data.get(addr))
+        let d = state.read(addr)
+        return !d ? null : JSON.parse(d)
       },
       write (addr, data) {
-        state.data.set(addr, JSON.stringify(data))
+        state.write(addr, JSON.stringify(data))
       },
-      call: (name, reentry, state, tag, args) => {
-        calls.push([name, reentry, task.state, tag, JSON.stringify(args)])
+      call (name, reentry, stateId, tag, args) {
+        if (stateId === null) {
+          stateId = state.id
+        }
+        if (tag === null) {
+          tag = '_'
+        }
+        let calls = this.read('_calls')
+        calls.push([name, reentry, stateId, tag, args])
+        this.write('_calls', calls)
       }
     }
 
-    let entry = this.binary[task.entry]
+    let calls = []
     try {
+      // initialise space for syscalls
+      c.write('_calls', [])
       // this is user space
       entry.call(null, c)
+      state.owner = null
+      // move syscalls into kernel space
+      calls = c.read('_calls').map(e => ({ call: e[0], reentry: e[1], stateId: e[2], tag: e[3], args: e[4] }))
     } catch (e) {
-      console.log('userspace error', e)
+      os.debug(id + ' ' + e)
+      console.log('userspace error', id, e)
     }
-
-    // initial work on syscalls, represents moving data into kernel space
-    calls = calls.map(e => ({ pod: this, call: e[0], reentry: e[1], state: e[2], tag: e[3], args: e[4] }))
 
     return { state, calls }
   }
-  doSyscalls (calls) {
-    let unhandled = []
+  debug (text) {
+    this.bios.writeToConsole(`\n${this.time} ${text}`)
+  }
+  newPod (parent, channel0, binary) {
+    // queue
+    let queue = []
+    // states
+    let states = new IdMap()
+    // channels owned by this pod, i.e. connecting its children
+    let channels = new IdMap()
+    // channel endpoints
+    let endpoints = new IdMap()
+    endpoints.add(channel0)
+    // child pods
+    let children = new Map()
+
+    let pod = {
+      parent,
+      binary,
+      queue,
+      states,
+      channels,
+      endpoints,
+      children
+    }
+
+    return pod
+  }
+  podId (pod, parent) {
+    return Array.reverse([...(function*() {
+      while (pod !== parent) {
+        yield pod.id
+        pod = pod.parent
+      }
+    })()]).join('.')
+  }
+  start (pod) {
+    let state0 = this.newState(pod)
+    pod.states.add(state0)
+    this.enqueue(pod, 'main', 0)
+  }
+  doSyscalls (pod, calls) {
     for (let call of calls) {
-      call.pod = this
-      call.args = JSON.parse(call.args)
-      let ret = this.doSyscall(call)
-      if (ret !== null) {
-        if (call.tag) {
-          call.state.data.set(call.tag, ret)
-        }
-        if (call.reentry) {
-          this.enqueue(call.reentry, call.state)
-        }
-      } else {
-        unhandled.push(call)
+      let err = this.doSyscall(pod, call)
+      if (err) {
+        this.debug('syscall error: ' + err)
       }
     }
-    return unhandled
   }
-  doSyscall (call) {
-    switch (call.call) {
-    case 'alloc':
-      return this._alloc(call.pod, call.args)
-    case 'spawn':
-      return this._spawn(call.pod, call.args)
-    case 'connect':
-      return this._connect(call.pod, call.args)
-    case 'send':
-      return this._send(call.pod, call.args)
-    default:
-      return null
+  doSyscall (pod, call) {
+    let state = pod.states.get(call.stateId)
+    if (!state) {
+      return 'nostate'
     }
+    let entry = pod.binary[call.reentry]
+    if (!entry) {
+      return 'noentry'
+    }
+    if (state.owner) {
+      return 'conflict'
+    }
+
+    let res = this.syscall(pod, call.call, call.args)
+
+    if (call.tag) {
+      state.write(call.tag, JSON.stringify(res))
+    }
+
+    this.enqueue(pod, call.reentry, call.stateId)
+
+    return null
+  }
+  syscall (pod, call, args) {
+    switch (call) {
+    case 'sched':
+      return this._sched(pod, args)
+    case 'alloc':
+      return this._alloc(pod, args)
+    case 'delete':
+      return this._delete(pod, args)
+    case 'spawn':
+      return this._spawn(pod, args)
+    case 'connect':
+      return this._connect(pod, args)
+    case 'send':
+      return this._send(pod, args)
+    case 'receive':
+      return this._receive(pod, args)
+    case 'close':
+      return this._close(pod, args)
+    default:
+      return 'nocall'
+    }
+  }
+  _sched (pod, args) {
+    return true
   }
   _alloc (pod, args) {
     // allocate a new state object
-    let state = new State()
+    let state = this.newState(pod)
     pod.states.add(state)
     return state.id
+  }
+  _delete (pod, args) {
+    // removes an allocation
+    let [stateId] = args
+    let state = pod.states.get(stateId)
+    if (!state) {
+      return 'nostate'
+    }
+    if (state.owner) {
+      return 'conflict'
+    }
+    pod.states.delete(stateId)
+    return true
   }
   _spawn (pod, args) {
     // create and start a new pod, as a child of this one
     let [binary] = args
 
     // cheat straight to disk
-    let binx = this.os.bios.readDisk(binary)
+    let binx = this.bios.readDisk(binary)
     let bin = {}
     for (let prop in binx) {
       bin[prop] = binx[prop]
     }
 
-    let channel0 = new Channel()
-    this.endpoints.add(channel0.start)
+    // TODO - link in sys library
 
-    let p = new Pod(this.os, this, channel0.end, bin)
+    let channel0 = this.newChannel(pod)
+    pod.endpoints.add(channel0.start)
 
-    this.children.add(p)
-    p.start()
-    return p.id
+    let p = this.newPod(pod, channel0.end, bin)
+    // process id is the same as the channel to it
+    p.id = channel0.start.id
+
+    pod.children.set(p.id, p)
+    this.start(p)
+
+    channel0.start.owner = p.id
+
+    return channel0.start.id
   }
   _connect (pod, args) {
     // connect two pods, both of which are children of this one
@@ -245,8 +288,9 @@ class Pod {
     let src = pod.children.get(srcId)
     let tgt = pod.names.get(name)
 
-    let chn = new Channel(pod)
+    let chn = this.newChannel(pod)
     pod.channels.add(chn)
+
     src.endpoints.add(chn.start)
     // TODO - some sort of handshake
     tgt.endpoints.add(chn.end)
@@ -260,46 +304,120 @@ class Pod {
     chn.write(data)
     return true
   }
-}
-
-// local memory, to be accessed by at most one task at a time
-class State {
-  constructor () {
-    this.data = new Map()
-    this.owner = null
-  }
-}
-
-// connects pods
-class Channel {
-  constructor (owner) {
-    this.start = new ChannelEnd(this)
-    this.end = new ChannelEnd(this)
-  }
-}
-
-// one end of a channel
-class ChannelEnd {
-  constructor (channel) {
-    this.channel = channel
-    this.up = []
-  }
-  write (data) {
-    this.up.push(data)
-  }
-  read () {
-    if (this === this.channel.start) {
-      return this.channel.end.up.shift()
-    } else {
-      return this.channel.start.up.shift()
+  _receive (pod, args) {
+    // instructs something to be run anytime data appears in a channel
+    let [chnId, entry, stateId, tag] = args
+    let chn = pod.endpoints.get(chnId)
+    if (!chn) {
+      return 'nochannel'
     }
+    chn.rx = { entry, stateId, tag }
+    return true
+  }
+  _close (pod, args) {
+    // closes a channel
+    return false
+  }
+  newState (pod) {
+    let data = new Map()
+
+    let state = {
+      data: data,
+      owner: null,
+      write (addr, data) {
+        return this.data.set(addr, data)
+      },
+      read (addr) {
+        return this.data.get(addr)
+      }
+    }
+
+    return state
+  }
+  newTask (pod, entryName, stateId) {
+    let entry = pod.binary[entryName]
+    if (!entry) {
+      return 'noentry'
+    }
+    let state = pod.states.get(stateId)
+    if (state.owner) {
+      return 'conflict'
+    }
+    let task = { entry, state }
+    state.owner = task
+    return task
+  }
+  enqueue (pod, entryName, stateId) {
+    let task = this.newTask(pod, entryName, stateId)
+    pod.queue.push(task)
+    return null
+  }
+  newChannel (pod) {
+    let atob = []
+    let btoa = []
+
+    let start = this.newEndpoint(atob, btoa)
+    let end = this.newEndpoint(btoa, atob)
+
+    return { start, end }
+  }
+  newEndpoint (u, d) {
+    let endpoint = {
+      owned: null,
+      write (data) {
+        u.push(data)
+      },
+      read () {
+        d.shift()
+      }
+    }
+    return endpoint
   }
 }
 
-// goes into the queue
-class Task {
-  constructor (entry, state) {
-    this.entry = entry
-    this.state = state
+// code of pod0
+let pod0bin = {
+  main (sys) {
+    // start of first userspace code
+    sys.debug('main')
+
+    let launchList = [ 'drv1', 'drv2', 'fs', 'init' ]
+    sys.write('launchList', launchList)
+
+    // this registry enables connection to drivers
+    let registry = {}
+    sys.write('registry', registry)
+
+    // start up system level processes
+    sys.call('sched', 'launch', null, 'tag', sys)
+  },
+  launch (sys) {
+    let launchList = sys.read('launchList')
+    let next = launchList.shift()
+    if (next) {
+      sys.write('next', next)
+      sys.write('launchList', launchList)
+      sys.call('spawn', 'listen', null, 'ret', [next])
+    } else {
+    }
+  },
+  listen (sys) {
+    let last = sys.read('next')
+    let ret = sys.read('ret')
+    sys.debug(`spawned: ${last} ${ret}`)
+
+    // remember all the processes spawned
+    let registry = sys.read('registry')
+    registry[last] = ret
+    sys.write('registry', registry)
+
+    sys.call('receive', 'next', null, 'ret', [ret, 'receive', sys.state(), 'got'])
+  },
+  next (sys) {
+    sys.call('sched', 'launch', null, null, [])
+  },
+  receive (sys) {
+    // message received from child pod
+    sys.debug('received: ' + sys.read('got'))
   }
 }
