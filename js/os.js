@@ -36,8 +36,12 @@ export default class OS {
     this.time++
 
     // tick the whole OS by recursing down the process tree
-    let res = this.tickPod(this.pod0)
-    // TODO - see what happened?
+    try {
+      let res = this.tickPod(this.pod0)
+      // TODO - see what happened?
+    } catch (e) {
+      console.log('os error', e)
+    }
 
     window.setTimeout(() => this.tick(), 100)
   }
@@ -57,14 +61,14 @@ export default class OS {
           continue
         }
         // and state is unlocked
-        let rcv = channel.read()
+        let rcv = channel.down.shift()
         if (rcv) {
           // and data is available
           // then store data in state
-          state.write(channel.rx.tag, {
+          state.write('_', JSON.stringify({
             channelId: channel.id,
             data: rcv
-          })
+          }))
           // and schedule execution
           this.enqueue(pod, channel.rx.entry, channel.rx.stateId)
         }
@@ -108,15 +112,13 @@ export default class OS {
       write (addr, data) {
         state.write(addr, JSON.stringify(data))
       },
-      call (name, reentry, stateId, tag, args) {
+      call (name, reentry, stateId, args) {
         if (stateId === null) {
           stateId = state.id
         }
-        if (tag === null) {
-          tag = '_'
-        }
+        // let args1 = JSON.stringify(args)
         let calls = this.read('_calls')
-        calls.push([name, reentry, stateId, tag, args])
+        calls.push([name, reentry, stateId, args])
         this.write('_calls', calls)
       }
     }
@@ -127,13 +129,13 @@ export default class OS {
       c.write('_calls', [])
       // this is user space
       entry.call(null, c)
-      state.owner = null
       // move syscalls into kernel space
-      calls = c.read('_calls').map(e => ({ call: e[0], reentry: e[1], stateId: e[2], tag: e[3], args: e[4] }))
+      calls = c.read('_calls').map(e => ({ call: e[0], reentry: e[1], stateId: e[2], args: e[3] }))
     } catch (e) {
       os.debug(id + ' ' + e)
       console.log('userspace error', id, e)
     }
+    state.owner = null
 
     return { state, calls }
   }
@@ -200,11 +202,7 @@ export default class OS {
     }
 
     let res = this.syscall(pod, call.call, call.args)
-
-    if (call.tag) {
-      state.write(call.tag, JSON.stringify(res))
-    }
-
+    state.write('_', JSON.stringify(res))
     this.enqueue(pod, call.reentry, call.stateId)
 
     return null
@@ -301,17 +299,17 @@ export default class OS {
     // send data into a channel
     let [chnId, data] = args
     let chn = pod.endpoints.get(chnId)
-    chn.write(data)
+    chn.up.push(data)
     return true
   }
   _receive (pod, args) {
     // instructs something to be run anytime data appears in a channel
-    let [chnId, entry, stateId, tag] = args
+    let [chnId, entry, stateId] = args
     let chn = pod.endpoints.get(chnId)
     if (!chn) {
       return 'nochannel'
     }
-    chn.rx = { entry, stateId, tag }
+    chn.rx = { entry, stateId }
     return true
   }
   _close (pod, args) {
@@ -361,15 +359,11 @@ export default class OS {
 
     return { start, end }
   }
-  newEndpoint (u, d) {
+  newEndpoint (up, down) {
     let endpoint = {
       owned: null,
-      write (data) {
-        u.push(data)
-      },
-      read () {
-        d.shift()
-      }
+      up: up,
+      down: down
     }
     return endpoint
   }
@@ -389,7 +383,7 @@ let pod0bin = {
     sys.write('registry', registry)
 
     // start up system level processes
-    sys.call('sched', 'launch', null, 'tag', sys)
+    sys.call('sched', 'launch', null, [])
   },
   launch (sys) {
     let launchList = sys.read('launchList')
@@ -397,13 +391,14 @@ let pod0bin = {
     if (next) {
       sys.write('next', next)
       sys.write('launchList', launchList)
-      sys.call('spawn', 'listen', null, 'ret', [next])
+      sys.call('spawn', 'listen', null, [next])
     } else {
+      sys.debug('done')
     }
   },
   listen (sys) {
+    let ret = sys.read('_')
     let last = sys.read('next')
-    let ret = sys.read('ret')
     sys.debug(`spawned: ${last} ${ret}`)
 
     // remember all the processes spawned
@@ -411,13 +406,16 @@ let pod0bin = {
     registry[last] = ret
     sys.write('registry', registry)
 
-    sys.call('receive', 'next', null, 'ret', [ret, 'receive', sys.state(), 'got'])
+    sys.call('receive', 'next', null, [ret, 'receive', sys.state()])
   },
   next (sys) {
-    sys.call('sched', 'launch', null, null, [])
+    let ret = sys.read('_')
+    let last = sys.read('next')
+    sys.call('sched', 'launch', null, [])
   },
   receive (sys) {
     // message received from child pod
-    sys.debug('received: ' + sys.read('got'))
+    let { channelId, data } = sys.read('_')
+    sys.debug(`received: ${channelId} ${data}`)
   }
 }

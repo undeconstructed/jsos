@@ -37,7 +37,7 @@ let files = {
   'kbd': {
     main (sys) {
       sys.debug('kbd main')
-      sys.call('send', 'i', null, null, [0, ['register', 'kbd']])
+      sys.call('send', 'i', null, [0, ['register', 'kbd']])
     },
     i() {
     }
@@ -46,7 +46,7 @@ let files = {
   'fs': {
     main (sys) {
       sys.debug('fs main')
-      sys.call('send', 'i', null, null, [0, ['register', 'fs']])
+      sys.call('send', 'i', null, [0, ['register', 'fs']])
     },
     data (sys, chn) {
     },
@@ -54,7 +54,8 @@ let files = {
       sys.debug('fs incoming')
     },
     i(sys) {
-      sys.debug('i')
+      let ret = sys.read('_')
+      sys.debug(`i: ${ret}`)
     }
   },
    // init app, and master of all normal pods
@@ -65,7 +66,7 @@ let files = {
       let registry = {}
       sys.write('registry', registry)
 
-      sys.call('send', 'i', null, 'r', [0, ['connect', 'fs']])
+      sys.call('send', 'i', null, [0, ['connect', 'fs']])
     },
     receive (sys) {
       sys.debug('init receive')
@@ -74,9 +75,11 @@ let files = {
       let fschn = sys.read('ret1')
       sys.debug('init fsconnected', fschn)
       sys.write('fschn', fschn)
-      sys.call('send', 'i', null, null, [fschn, 'some message'])
+      sys.call('send', 'i', null, [fschn, 'some message'])
     },
-    i () {
+    i (sys) {
+      let ret = sys.read('_')
+      sys.debug(`i: ${ret}`)
     }
   },
   // display server
