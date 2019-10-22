@@ -1,7 +1,8 @@
 
-import OS from './os.js'
+import { new_os } from './os.js'
+import jsc from './jsc.js'
 
-// keyboard hardward
+// keyboard hardware
 let keyboard = {
   init () {
     document.addEventListener('keypress', e => {
@@ -9,7 +10,9 @@ let keyboard = {
     })
   },
   read () {
-    return this.char
+    let char = this.char
+    this.char = null
+    return char
   }
 }
 
@@ -19,6 +22,54 @@ let display = {
     this.html = document.getElementById('display')
   }
 }
+
+let initBin = jsc({
+  '*main': {
+    'start': (sys, args) => {
+      sys.debug('init main')
+
+      let launchList = [ 'drv1', 'drv2', 'fs', 'init' ]
+      sys.write('launchList', launchList)
+
+      let registry = {}
+      sys.write('registry', registry)
+
+      sys.call('send', 'i', null, [0, ['connect', 'fs']])
+    }
+  },
+  receive (sys) {
+    sys.debug('init receive')
+  },
+  fsconnected (sys) {
+    let fschn = sys.read('ret1')
+    sys.debug('init fsconnected', fschn)
+    sys.write('fschn', fschn)
+    sys.call('send', 'i', null, [fschn, 'some message'])
+  },
+  i (sys) {
+    let ret = sys.read('_')
+    sys.debug(`i: ${ret}`)
+  }
+})
+
+let fsBin = jsc({
+  '*main': {
+    'start': (sys, args) => {
+      sys.debug('fs main start')
+      // sys.call('send', 'i', null, [0, ['register', 'fs']])
+    },
+    'newchannel': (sys, args) => {
+      sys.debug('fs main newchannel')
+    }
+  },
+  incoming (sys) {
+    sys.debug('fs incoming')
+  },
+  i(sys) {
+    let ret = sys.read('_')
+    sys.debug(`i: ${ret}`)
+  }
+})
 
 // represents filesystem on disk
 let files = {
@@ -43,45 +94,9 @@ let files = {
     }
   },
   // fs server
-  'fs': {
-    main (sys) {
-      sys.debug('fs main')
-      sys.call('send', 'i', null, [0, ['register', 'fs']])
-    },
-    data (sys, chn) {
-    },
-    incoming (sys) {
-      sys.debug('fs incoming')
-    },
-    i(sys) {
-      let ret = sys.read('_')
-      sys.debug(`i: ${ret}`)
-    }
-  },
+  'fs': fsBin,
    // init app, and master of all normal pods
-  'init': {
-    main (sys) {
-      sys.debug('init main')
-
-      let registry = {}
-      sys.write('registry', registry)
-
-      sys.call('send', 'i', null, [0, ['connect', 'fs']])
-    },
-    receive (sys) {
-      sys.debug('init receive')
-    },
-    fsconnected (sys) {
-      let fschn = sys.read('ret1')
-      sys.debug('init fsconnected', fschn)
-      sys.write('fschn', fschn)
-      sys.call('send', 'i', null, [fschn, 'some message'])
-    },
-    i (sys) {
-      let ret = sys.read('_')
-      sys.debug(`i: ${ret}`)
-    }
-  },
+  'init': initBin,
   // display server
   'display': {
     main (sys) {
@@ -126,7 +141,7 @@ let bios = {
 }
 
 // the OS
-let os = new OS(bios)
+let os = new_os(bios)
 os.boot()
 
 // for hacking

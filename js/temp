@@ -1,0 +1,10 @@
+
+fn main () {
+  i = 1
+  j = i + 1
+  go child("hello")
+}
+
+fn child () {
+  
+}

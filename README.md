@@ -16,7 +16,7 @@ Then containers try to multiply that again on top.
 
 Obviously lots of OSs have tried to strip back to the minimum, but the tendency
 is then to just reimplement the same old things on top. Maybe instead the OS
-should offer something fundamentally different than the one instuction after
+should offer something fundamentally different than the one instruction after
 another paradigm.
 
 ## Pods

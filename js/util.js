@@ -31,14 +31,49 @@ export class IdMap {
 export function mkel(tag, opts) {
   opts = opts || {}
   let e = document.createElement(tag)
-  if (opts.classes) {
-    e.classList.add(...opts.classes)
-  }
-  if (opts.style) {
-    e.style = opts.style
-  }
-  if (opts.text) {
-    e.textContent = opts.text
+  for (let opt in opts) {
+    switch (opt) {
+      case 'classes':
+        e.classList.add(...opts.classes)
+        break
+      case 'text':
+        e.textContent = opts.text
+        break
+      default:
+        e[opt] = opts[opt]
+    }
   }
   return e
+}
+
+export function defer (delay, func, args) {
+  return setTimeout(function () {
+    return func(...args)
+  })
+}
+
+export function hook (src, event, options, func, args) {
+  return src.addEventListener(event, function (e) {
+    return func(e, ...args)
+  }, options)
+}
+
+export function animate (func, args) {
+  window.requestAnimationFrame(function() {
+    func(...args)
+  })
+}
+
+export function select (parent, selector) {
+  return parent.querySelector(selector)
+}
+
+export function main (func) {
+  document.addEventListener('DOMContentLoaded', function() {
+    func({
+      window,
+      document,
+      localStorage
+    })
+  })
 }
